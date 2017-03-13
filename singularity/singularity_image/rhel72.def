@@ -1,0 +1,32 @@
+BootStrap: yum
+OSVersion: 7
+MirrorURL: file:///enod/hpc/repos/yum/rhel/7/7.2
+Include: yum
+include: yum-utils
+Include: procps
+Include: util-linux-ng
+Include: openssh-clients
+
+%setup
+    echo "Looking in directory '$SINGULARITY_ROOTFS' for /bin/sh"
+    if [ ! -x "$SINGULARITY_ROOTFS/bin/sh" ]; then
+        echo "Hrmm, this container does not have /bin/sh installed..."
+        exit 1
+    fi
+    cp HPCGRHEL7.2.repo $SINGULARITY_ROOTFS/etc/yum.repos.d/
+    cp ib_repo_rh72.repo $SINGULARITY_ROOTFS/etc/yum.repos.d/
+    mv $SINGULARITY_ROOTFS/usr/bin/ssh $SINGULARITY_ROOTFS/usr/bin/ssh_real
+    cp ssh-replacement.sh $SINGULARITY_ROOTFS/usr/bin/ssh
+    chmod 755 $SINGULARITY_ROOTFS/usr/bin/ssh
+    echo "* hard memlock unlimited" >> $SINGULARITY_ROOTFS/etc/security/limits.conf
+    echo "* soft memlock unlimited" >> $SINGULARITY_ROOTFS/etc/security/limits.conf
+    cd $SINGULARITY_ROOTFS/usr/local/
+
+%post
+    echo "Installing MPI and IB"
+    yum -y install libipathverbs mvapich2_intel_qlc hostname infinipath-libs libgfortran hwloc numactl numactl-devel
+    yum -y erase mvapich2_intel_qlc                      #>>>>>>>>>>>>>>>>>>>>>>>>>>>> Because of a bug
+    rm -rf /usr/mpi/gcc/mvapich2_intel_qlc*
+    yumdownloader mvapich2_intel_qlc
+    rpm -ivh mvapich2_intel_qlc*
+    yum -y install openssh-clients tar strace

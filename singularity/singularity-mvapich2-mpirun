@@ -1,0 +1,102 @@
+#!/bin/bash
+#Orignal code Ahmed Bukhamsin - 05/09/2016
+#Rewritten by Antoine Schonewille for Mvapich - 05/11/2016
+#Singularity version by Ahmed 03/07/2017
+
+USE_NUMA=no
+
+# ---------------------------------------------------------------------------------------------------------------------------
+
+SINGULARITY_IMAGE="/tmp/powers_rhel72.img"
+CHDIRTO=`pwd`
+
+
+MPI_HOME=/usr/mpi/intel/mvapich2-2.1-qlc
+OMP_NUM_THREADS=1
+MV2_TUNING='MV2_ENABLE_AFFINITY=1 MV2_CPU_BINDING_LEVEL=socket MV2_CPU_BINDING_POLICY=scatter'
+LM_LICENSE_FILE='1726@licsrvl1:1726@licsrvl2:1726@licsrvl3:1703@licsrvl1:1703@licsrvl2:1703@licsrvl3'
+
+## --------------------------------- to do CPU pinning in a dynamic way - VERY BETA -------------------------------------------
+
+HOSTFILE=`echo ${@} | grep -oE "\-hostfile \S+" | awk '{ print $2 }'`
+if [ "$HOSTFILE" ] && [ "$USE_NUMA" ]; then
+        PPN=`uniq -c $HOSTFILE | sort -k1 -r -n | head -n1 | awk '{ print $1 }' `
+        SYSTEM_CORES=`cat /proc/cpuinfo |grep "^processor"|wc -l`
+        DOMAINS_CORES=`cat /proc/cpuinfo |grep "^physical id"|sort|uniq -c|awk '{ print $1 }'`
+        DOMAINS_WC=`echo $DOMAINS_CORES | wc -w`
+        JOB_CORES=`echo $PPN'/'$DOMAINS_WC | bc`
+        if [ "$SYSTEM_CORES" -gt "$PPN" ]; then
+                CORE=0
+                CORE_TEL=0
+                for DOMAIN in $DOMAINS_CORES; do
+                        FIRST_CORE=$CORE
+                        LAST_CORE=$[CORE+JOB_CORES-1]
+                        NUMA_CORES=$NUMA_CORES','$FIRST_CORE'-'$LAST_CORE
+                        CORE=$[CORE+DOMAIN]
+                        CORE_TEL=$[JOB_CORES+CORE_TEL]
+                done
+                if [ "$CORE_TEL" -lt "$PPN" ]; then
+                        NUMA_CORES=$NUMA_CORES','$[SYSTEM_CORES-1]
+                fi
+                NUMA_CORES=`echo $NUMA_CORES|sed -e 's/^,//'`
+		#NUMA_CTL='numactl --shmid=31337 --physcpubind='$NUMA_CORES
+		#NUMA_CTL='numactl --shmid=31337 --physcpubind=0-15'
+		NUMA_CTL='numactl --shmid=31337'
+        fi
+fi
+
+## ----------------------------------------------------------------------------------------------------------------------------
+
+
+# main command to be run in singlularity session (spawn)
+cat << EOF >~/singularity/master_command
+#!/bin/bash
+export MPI_HOME=$MPI_HOME
+export LM_LICENSE_FILE=$LM_LICENSE_FILE
+export PATH=/usr/local/bin:\$MPI_HOME/bin/:~/bin/:/bin:/usr/bin:/opt/singularity/bin
+export LD_LIBRARY_PATH=/usr/local/lib/:/usr/lib64:\$MPI_HOME/lib/:\$MPI_HOME/lib64/
+#:/gptsd/psdm3/TIV/schoneap/POWERS/lib/:/usr/mpi/intel/mvapich2-2.1-qlc/lib:/usr/mpi/intel/mvapich2-2.1-qlc/lib64:/gptsd/psdm3/TIV/schoneap/POWERS/lib:/enod/hpc/home/schoneap/docker/hpl/lib64/:/usr/lpp/mmfs/lib/:/enod/hpc/home/schoneap/tools/mvapich2-2.1a/lib/
+export OMP_NUM_THREADS=$OMP_NUM_THREADS
+cd $CHDIRTO
+# echo mpirun_rsh $@
+\$MPI_HOME/bin/mpirun_rsh -ssh -export-all $@
+EOF
+
+chmod 755 ~/singularity/master_command
+
+# command ran on each singularity instance (ranks)
+cat << EOF >~/singularity/command
+#!/bin/bash
+command="\${@}"
+_HOST=\`hostname --short\`
+export MPI_HOME=$MPI_HOME
+export LM_LICENSE_FILE=$LM_LICENSE_FILE
+export LD_LIBRARY_PATH=/usr/local/lib/:\$MPI_HOME/lib/:\$MPI_HOME/lib64/
+#:/gptsd/psdm3/TIV/schoneap/POWERS/lib/:/usr/mpi/intel/mvapich2-2.1-qlc/lib:/usr/mpi/intel/mvapich2-2.1-qlc/lib64:/gptsd/psdm3/TIV/schoneap/POWERS/lib:/enod/hpc/home/schoneap/docker/hpl/lib64/:/usr/lpp/mmfs/lib/:/enod/hpc/home/schoneap/tools/mvapich2-2.1a/lib/
+export PATH=/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/usr/sbin:\$MPI_HOME/bin/:/opt/singularity/bin
+export OMP_NUM_THREADS=$OMP_NUM_THREADS
+# echo '<'\$_HOST' COMMAND START>'
+rm -rf /dev/shm/* 2> /dev/null
+echo "\$command" > /tmp/to_run.sh
+$NUMA_CTL /bin/bash /tmp/to_run.sh 2>&1
+rm -rf /dev/shm/* 2> /dev/null
+# echo '<'\$_HOST' COMMAND END>'
+rm -f /tmp/to_run.sh
+EOF
+
+chmod 755 ~/singularity/command
+
+# singularity instance launched remotely. called from master_command / ssh on rank 0
+cat << EOF > ~/singularity/job
+#!/bin/bash
+command="\${@}"
+_HOST=\`hostname --short\`
+# echo '<'\$_HOST' JOB START>'
+/opt/singularity/bin/singularity exec -w -B /gptsd/psdm3 -B /enod/hpc $SINGULARITY_IMAGE ~/singularity/command "\$command"
+# echo '<'\$_HOST' JOB END>'
+EOF
+
+chmod 755 ~/singularity/job
+
+singularity exec -w -B /gptsd/psdm3 -B /enod/hpc $SINGULARITY_IMAGE bash --noprofile --norc ~/singularity/master_command
+

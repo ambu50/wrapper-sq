@@ -1,0 +1,8 @@
+[HPCGRHEL7.2]
+name=RHEL 7.2 Base Repository
+baseurl=http://myservre/yum/rhel/7/7.2
+enabled=1
+priority=2
+gpgcheck=False
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
+
